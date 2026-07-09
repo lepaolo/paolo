@@ -1,0 +1,15 @@
+Scan IMX (historique VeVe pre-CollectChain) — repo astronema
+=============================================================
+POURQUOI : dater la VRAIE anciennete des wallets 2022-2025 (l'API IMX officielle
+est morte ; on passe par le backend AppSync public d'immutascan.io). Meme patron
+que le scan CollectChain : resumable + archive en Release + fusion registre.
+
+1. Uploader scraper/imx_scan.py (+ __init__.py si absent) dans le repo de scan
+   (celui du compte astronema, PUBLIC).
+2. Add file -> Create new file -> ".github/workflows/imx-scan.yml" -> coller
+   WORKFLOW_imx-scan.yml.
+3. Actions -> "IMX registry deep scan" -> Run workflow -> reset=true.
+   Se relance tout seul jusqu'a la genese 2022. Archives dans Releases ->
+   "imx-archive". Registre : data/wallet_registry_imx.csv.
+Aucun secret. Peut tourner EN MEME TEMPS que le scan CollectChain (groupe de
+concurrence different). Coller le debut du 1er log dans le chat.

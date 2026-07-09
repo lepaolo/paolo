@@ -1,0 +1,94 @@
+name: IMX registry deep scan
+
+# Aspire l'historique VeVe sur Immutable X (contrat 0xa7aefead...) via le
+# backend AppSync GraphQL d'immutascan.io (API IMX officielle morte). Produit :
+#   - data/wallet_registry_imx.csv  (wallet -> first_seen, commite)
+#   - archive/imx_transfers_runNNN.csv.gz -> Release "imx-archive" (pas commite)
+# Resumable (curseur maxTime), se relance tout seul jusqu'a la genese 2022
+# (garde-fou 60 runs). Lancer avec reset=true la 1ere fois.
+#
+# A METTRE SUR LE COMPTE astronema (repo public = minutes illimitees), a cote
+# du scan CollectChain. Aucun secret requis (cle API publique du site).
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Budget de scan par run (minutes)"
+        default: "280"
+      auto_continue:
+        description: "Se relance tout seul jusqu'a la genese"
+        type: boolean
+        default: true
+      reset:
+        description: "Repartir de zero (ignore l'etat existant)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: veve-imx-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: IMX deep scan (tranche)
+        env:
+          SCAN_MINUTES: ${{ github.event.inputs.minutes || '280' }}
+          SCAN_RESET: ${{ github.event.inputs.reset || 'false' }}
+        run: python -m scraper.imx_scan
+
+      - name: Upload archive (Release imx-archive)
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls archive/imx_*.csv.gz >/dev/null 2>&1 || { echo "Pas d'archive."; exit 0; }
+          gh release view imx-archive >/dev/null 2>&1 || \
+            gh release create imx-archive --title "Archive transferts IMX (VeVe)" \
+              --notes "CSV.gz par tranche. Colonnes: txn_id,txn_time_ms,date_pt,txn_type,from,to,token_id,token_address. Dedup par txn_id. Source: backend AppSync immutascan.io."
+          gh release upload imx-archive archive/imx_*.csv.gz --clobber
+          ls -lh archive/
+
+      - name: Commit de la progression
+        if: ${{ always() }}
+        run: |
+          git config user.name "imx-scan-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/wallet_registry_imx.csv data/imx_scan_state.json
+          if git diff --cached --quiet; then echo "Rien a committer."; exit 0; fi
+          git commit -m "imx-scan: progression $(date -u +%FT%H:%M)"
+          for i in 1 2 3; do
+            git pull --rebase origin main && git push && break
+            sleep $((i * 5))
+          done
+
+      - name: Relance auto si pas fini
+        if: ${{ always() && github.event.inputs.auto_continue != 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DONE=$(python -c "import json; print(json.load(open('data/imx_scan_state.json')).get('done', False))" 2>/dev/null || echo "")
+          RUNS=$(python -c "import json; print(json.load(open('data/imx_scan_state.json')).get('runs', 0))" 2>/dev/null || echo 0)
+          if [ "$DONE" = "True" ]; then echo "Scan IMX termine."; exit 0; fi
+          if [ "$RUNS" -ge 60 ]; then echo "Garde-fou 60 runs atteint."; exit 0; fi
+          echo "Scan IMX incomplet (run $RUNS) — relance..."
+          gh workflow run imx-scan.yml --ref main \
+            -f minutes="${{ github.event.inputs.minutes || '280' }}" \
+            -f auto_continue=true -f reset=false
