@@ -1,33 +1,24 @@
 """
 IMX deep scan — historique VeVe sur Immutable X (ere pre-CollectChain).
 
-VeVe a d'abord tout minte sur Immutable X (contrat
-0xa7aefead2f25972d80516628417ac46b3f2604af) de fin 2021 a ~2026 avant/pendant
-la migration vers CollectChain. L'API officielle Immutable X est morte (404),
-mais le backend AWS AppSync GraphQL d'immutascan.io repond encore et pagine
-TOUT l'historique des transferts. On l'aspire pour :
+Backend AWS AppSync GraphQL d'immutascan.io (API IMX officielle morte). Scanne
+listTransactionsV2 du contrat VeVe du PRESENT vers la GENESE (fin 2021) via le
+curseur `nextToken`, resumable entre runs. Produit :
 
-    - dater la VRAIE 1ere apparition des wallets (2022-2025), la ou le scan
-      CollectChain plafonne a la date de migration -> vrais "anciens" wallets ;
-    - archiver tous les transferts IMX (from, to, token, temps).
-
-Sorties (memes formats que le scan CollectChain, fusion triviale ensuite) :
     data/wallet_registry_imx.csv    wallet, first_seen, last_active, tx_count
-    data/imx_scan_state.json        curseur resumable
-    archive/imx_transfers_runNNN.csv.gz  -> Release "imx-archive"
+    data/imx_scan_state.json        next_token, cursor_max_ms, pages, done, runs
+    archive/imx_transfers_runNNN.csv.gz -> Release "imx-archive"
        colonnes : txn_id, txn_time_ms, date_pt, txn_type, from, to,
                   token_id, token_address
 
-Curseur = maxTime (borne temporelle haute, ms). Chaque run repart de
-maxTime=<plus vieux temps deja traite> et pagine vers le passe via nextToken
-jusqu'a epuisement du budget ; robuste meme si le nextToken n'a pas survecu
-entre deux runs GitHub. Doublons de frontiere dedupliques par txn_id au
-moment de consommer l'archive.
+FIX 2026-07-10 : le curseur `nextToken` est RECHARGE depuis l'etat au demarrage
+(sinon chaque relance repartait de maxTime=<jour> et RECOMMENCAIT une journee
+geante — ex 14/12/2021, jour du lancement VeVe : boucle infinie). Quand le
+nextToken devient nul, c'est la vraie fin (AppSync : plus de donnees) -> done ;
+plus de repositionnement maxTime qui rebouclait.
 
-Env : SCAN_MINUTES (defaut 280), SCAN_MAX_PAGES (0=illimite),
-      SCAN_PAUSE (defaut 0.05), SCAN_ARCHIVE ("false" pour couper),
-      SCAN_RESET ("true" = repartir de zero),
-      IMX_GENESIS_MS (borne basse, defaut 1 jan 2021).
+Dates en PT. Env : SCAN_MINUTES (280), SCAN_MAX_PAGES (0=illimite),
+SCAN_PAUSE (0.05), SCAN_ARCHIVE ("false" pour couper), SCAN_RESET ("true").
 """
 
 from __future__ import annotations
@@ -41,11 +32,9 @@ import os
 import sys
 import time
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 
-# --- source (backend public d'immutascan ; cle API publique du site) --------
 API_URL = "https://qbolqfa7fnctxo3ooupoqrslem.appsync-api.us-east-2.amazonaws.com/graphql"
 API_KEY = "da2-ceptv3udhzfmbpxr3eqisx3coe"
 CONTRACT = "0xa7aefead2f25972d80516628417ac46b3f2604af"
@@ -61,7 +50,14 @@ IMX_CSV = os.path.join(DATA_DIR, "wallet_registry_imx.csv")
 STATE_JSON = os.path.join(DATA_DIR, "imx_scan_state.json")
 ARCHIVE_DIR = os.environ.get("SCAN_ARCHIVE_DIR", "archive")
 
-PT = ZoneInfo("America/Los_Angeles")
+# PT via un offset fixe -8h suffit pour le decoupage jour (pas de DST critique ici),
+# mais on utilise zoneinfo si dispo.
+try:
+    from zoneinfo import ZoneInfo
+    PT = ZoneInfo("America/Los_Angeles")
+except Exception:  # pragma: no cover
+    PT = _dt.timezone(_dt.timedelta(hours=-8))
+
 ZERO = "0x0000000000000000000000000000000000000000"
 MARKET_ESCROW = "0xb1af72a77b9065c55cda0680b86655a79b62e42c"
 _SKIP = {ZERO, MARKET_ESCROW, ""}
@@ -74,7 +70,6 @@ SAVE_EVERY_PAGES = 500
 REQUEST_TIMEOUT = 60
 MAX_RETRIES = 5
 RETRY_BACKOFF = 3
-GENESIS_MS = int(os.environ.get("IMX_GENESIS_MS", "1609459200000"))  # 2021-01-01
 
 
 def _session() -> requests.Session:
@@ -154,8 +149,6 @@ def _update(reg: Dict[str, Dict[str, Any]], wallet: str, date: str) -> None:
     e["tx"] += 1
 
 
-# ---- archive ---------------------------------------------------------------
-
 def _flush_archive(path: str, rows: List[List[Any]], write_header: bool) -> int:
     if not rows:
         return 0
@@ -169,8 +162,6 @@ def _flush_archive(path: str, rows: List[List[Any]], write_header: bool) -> int:
         f.write(gzip.compress(buf.getvalue().encode("utf-8")))
     return len(rows)
 
-
-# ---- state -----------------------------------------------------------------
 
 def _load_state() -> Dict[str, Any]:
     if not os.path.exists(STATE_JSON):
@@ -187,8 +178,6 @@ def _save_state(state: Dict[str, Any]) -> None:
         json.dump(state, f, indent=1)
     os.replace(tmp, STATE_JSON)
 
-
-# ---- deep scan -------------------------------------------------------------
 
 def deep_scan() -> int:
     budget_s = float(os.environ.get("SCAN_MINUTES", "280")) * 60
@@ -213,14 +202,14 @@ def deep_scan() -> int:
     if archive_on and os.path.exists(apath):
         os.remove(apath)
 
-    # Curseur inter-run : borne haute temporelle (ms). None au 1er run.
+    # FIX : reprendre au nextToken sauvegarde (sinon recommence la journee via maxTime)
+    next_token = state.get("next_token")
     cursor_max = state.get("cursor_max_ms")
     print(f"Registre IMX : {len(reg)} wallets. pages cumulees={state.get('pages', 0)}, "
-          f"curseur={_pt_date(cursor_max) if cursor_max else 'present'}. "
+          f"reprise={'nextToken' if next_token else ('maxTime=' + _pt_date(cursor_max) if cursor_max else 'present')}. "
           f"Archive : {'ON -> ' + apath if archive_on else 'OFF'}", flush=True)
 
     session = _session()
-    next_token = None            # best-effort intra-run
     t0 = time.time()
     pages = 0
     transfers = 0
@@ -273,8 +262,11 @@ def deep_scan() -> int:
         pages += 1
 
         next_token = data.get("nextToken")
+        state.update(next_token=next_token, cursor_max_ms=oldest_ms,
+                     pages=int(state.get("pages", 0)) + 1,
+                     transfers=int(state.get("transfers", 0)) + len(items))
 
-        if pages % 100 == 0:
+        if pages % 200 == 0:
             rate = pages / max(1.0, time.time() - t0)
             print(f"    ... {pages} pages ce run ({rate:.1f}/s), {len(reg)} wallets, "
                   f"{archived_run + len(abuf)} archives, remonte a {_pt_date(oldest_ms)}",
@@ -284,35 +276,24 @@ def deep_scan() -> int:
                 archived_run += _flush_archive(apath, abuf, header_pending)
                 header_pending = False
                 abuf = []
-            state.update(cursor_max_ms=oldest_ms, next_token=next_token,
-                         pages=int(state.get("pages", 0)) + 500)
             save_registry(IMX_CSV, reg)
             _save_state(state)
             print(f"    checkpoint ({len(reg)} wallets, {archived_run} archives).",
                   flush=True)
 
-        if oldest_ms and oldest_ms <= GENESIS_MS:
-            done = True
-            print("Borne genese atteinte (IMX_GENESIS_MS).", flush=True)
-            break
         if not next_token:
-            # fin de la fenetre nextToken : on repositionne le curseur temporel
-            # au plus vieux temps vu et on continuera au prochain tour de boucle.
-            if oldest_ms and oldest_ms > GENESIS_MS:
-                cursor_max = oldest_ms
-                next_token = None
-            else:
-                done = True
-                print("Plus de nextToken et borne atteinte — termine.", flush=True)
-                break
+            # FIX : nextToken nul = AppSync n'a plus de donnees = GENESE atteinte.
+            # (avant : on repositionnait maxTime=oldest -> boucle sur la journee geante)
+            done = True
+            print("nextToken nul — GENESE IMX atteinte, scan termine.", flush=True)
+            break
         if pause:
             time.sleep(pause)
 
     if archive_on:
         archived_run += _flush_archive(apath, abuf, header_pending)
-    # pages cumulees : approx (par blocs de 500 aux checkpoints) — on ajoute le reste
-    state["cursor_max_ms"] = oldest_ms
     state["next_token"] = next_token
+    state["cursor_max_ms"] = oldest_ms
     state["done"] = done
     state["runs"] = run_no
     state["archived"] = int(state.get("archived", 0)) + archived_run
