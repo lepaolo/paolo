@@ -9,6 +9,13 @@ name: Holders snapshot (etat actuel via /instances)
 # Resumable : chaque run traite HOLDERS_MINUTES de pages, commit sa
 # progression, puis SE RELANCE seul jusqu'au dernier token (garde-fou 40 runs).
 # Lancer avec reset=true pour repartir de zero.
+#
+# v2 (fix incident run#2 du 10/07) : un run cree en file d'attente fige main au
+# moment de sa CREATION -> son checkout peut etre PERIME (sans le commit d'etat
+# du run precedent) -> il repartait de zero et re-uploadait holders_run001.
+# Corrections : (1) pull de main au DEMARRAGE du run ; (2) garde-fou : refus de
+# demarrer sans etat si la Release contient deja des tranches (sauf reset=true) ;
+# (3) relance auto seulement si le run a reussi (plus de boucle sur echec).
 
 on:
   workflow_dispatch:
@@ -39,6 +46,24 @@ jobs:
     timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
+
+      - name: Etat le plus recent (anti-checkout perime)
+        run: git pull --rebase origin main
+
+      - name: Garde-fou anti-retour-a-zero
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESET: ${{ github.event.inputs.reset || 'false' }}
+        run: |
+          if [ "$RESET" = "true" ]; then echo "Reset demande - garde-fou ignore."; exit 0; fi
+          if [ ! -f data/holders_scan_state.json ] && gh release view holders-snapshot >/dev/null 2>&1; then
+            echo "ERREUR: aucun etat local mais la Release holders-snapshot contient deja des tranches."
+            echo "Checkout perime ou etat perdu - on refuse de repartir de zero (cela ecraserait les archives)."
+            echo "Verifier data/holders_scan_state.json sur main, ou relancer avec reset=true si voulu."
+            exit 1
+          fi
+          echo "Garde-fou OK."
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -80,7 +105,7 @@ jobs:
           done
 
       - name: Relance auto si pas fini
-        if: ${{ always() && github.event.inputs.auto_continue != 'false' }}
+        if: ${{ success() && github.event.inputs.auto_continue != 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
