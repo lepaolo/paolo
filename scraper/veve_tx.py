@@ -151,6 +151,8 @@ RETRIES = int(os.environ.get("VEVE_TX_RETRIES", "6"))
 # Desormais on ECRIT tous les FLUSH_PAGES : CSV + onglet + etat de reprise.
 # Annuler un run ne coute plus que les quelques pages en cours.
 FLUSH_PAGES = int(os.environ.get("VEVE_TX_FLUSH_PAGES", "200"))
+# Nombre de pages VIDES D'AFFILEE avant de conclure a la fin du flux.
+VIDES_CONFIRM = int(os.environ.get("VEVE_TX_VIDES_CONFIRM", "3"))
 LIMIT_STEPS = [100, 50, 25, 10]
 COOLDOWN = float(os.environ.get("VEVE_TX_COOLDOWN", "10"))  # pause apres panne
 
@@ -346,6 +348,7 @@ def walk(days: int = DAYS, until: str = "", max_pages: int = MAX_PAGES,
     seen: set = set()
     s = session or requests.Session()
     limit = LIMIT
+    vides = 0                 # pages vides D'AFFILEE (voir plus bas)
     pages = dupes = kept = skipped = 0
     oldest = ""
     incomplet = False
@@ -369,9 +372,23 @@ def walk(days: int = DAYS, until: str = "", max_pages: int = MAX_PAGES,
             break
         pages += 1
         if not items:
-            print(f"  page {cursor} vide -> genese atteinte.", flush=True)
+            # UNE page vide n'est PAS la genese (bug du 12/07 : le backfill
+            # s'est declare TERMINE au 26/06 alors qu'il visait le 01/06).
+            # L'API rend parfois une page vide en plein flux — elle nous a
+            # d'ailleurs servi des HTTP 500 a la pelle juste avant. On exige
+            # donc VIDES_CONFIRM pages vides d'affilee avant de conclure.
+            vides += 1
+            if vides < VIDES_CONFIRM:
+                print(f"  page {cursor} vide ({vides}/{VIDES_CONFIRM}) — "
+                      f"sans doute un hoquet de l'API, on reessaie.",
+                      flush=True)
+                time.sleep(5 * vides)
+                continue
+            print(f"  {vides} pages vides d'affilee -> genese atteinte.",
+                  flush=True)
             state["done"] = True
             break
+        vides = 0
         fresh = []
         for it in items:
             vid = str(it.get("veve_id") or "")
@@ -432,6 +449,8 @@ def walk(days: int = DAYS, until: str = "", max_pages: int = MAX_PAGES,
         state.setdefault("done", False)
         if not incomplet and oldest and until and oldest <= until:
             state["done"] = True
+            print(f"  objectif atteint : remonte jusqu'au {oldest} "
+                  f"(cible {until}).", flush=True)
 
     known = (set(DROP_TYPES) | set(MKT_VEVE_TYPES) | set(ADMIN_TYPES)
              | set(OTHER_TYPES) | {MKT_STACKR, TRANSFER})
@@ -712,4 +731,4 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
-# FIN veve_tx.py v8 (STORE_AUCTION compte dans le drop)
+# FIN veve_tx.py v9 (une page vide n'est plus prise pour la genese)
