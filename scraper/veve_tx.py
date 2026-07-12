@@ -632,15 +632,20 @@ def main() -> int:
     sh_cache = {}
 
     def _flush(jours: Dict[str, Dict], ps: Dict[str, str], st: Dict) -> int:
-        """Ecrit les jours complets + l'etat, en cours de route."""
+        """Ecrit les jours complets + l'ETAT, en cours de route.
+
+        Le Sheet est saute en mode CSV seul (bug du 12/07 : le flush plantait
+        sur `scraper.sheets indisponible` -> l'etat de reprise n'etait JAMAIS
+        sauve, donc une annulation repartait de zero malgre le CSV)."""
         rows_ = _rows(jours)
         n = save_csv(rows_)
-        if "sh" not in sh_cache:
-            sh_cache["sh"] = _client().open_by_key(sheet_id)
-        write_tab(sh_cache["sh"], rows_)
-        if WITH_PSEUDOS and ps:
-            merge_pseudos(sh_cache["sh"], ps)
-        save_state(st)
+        save_state(st)                    # <- l'ETAT D'ABORD, toujours
+        if not csv_seul:
+            if "sh" not in sh_cache:
+                sh_cache["sh"] = _client().open_by_key(sheet_id)
+            write_tab(sh_cache["sh"], rows_)
+            if WITH_PSEUDOS and ps:
+                merge_pseudos(sh_cache["sh"], ps)
         return n
 
     try:
@@ -705,4 +710,4 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
-# FIN veve_tx.py v7 (Sheet optionnel + reprise du backfill distant)
+# FIN veve_tx.py v7c (le flush sauve l'etat meme sans Sheet)
