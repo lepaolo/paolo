@@ -610,9 +610,17 @@ def merge_pseudos(sh, pairs: Dict[str, str]) -> Dict[str, int]:
 def main() -> int:
     t0 = time.time()
     sheet_id = os.environ.get("SHEET_ID", "").strip()
-    if not sheet_id:
+    # MODE CSV SEUL : pas de Sheet sur ce repo (backfill sur paolo) OU pas de
+    # SHEET_ID. On ne refuse de demarrer QUE si le Sheet est le seul but du run
+    # (quotidien sur le repo principal). Bug du 12/07 : ce garde-fou tombait
+    # AVANT la branche CSV et empechait le mode sans Sheet d'exister.
+    csv_seul = (not SHEETS_OK) or (not sheet_id)
+    if csv_seul and not BACKFILL and SHEETS_OK:
         print("SHEET_ID env var is not set.", file=sys.stderr)
         return 2
+    if csv_seul:
+        print("Mode CSV SEUL (pas de Sheet sur ce repo) — la recolte est "
+              "ecrite dans le CSV, le repo principal ira la lire.", flush=True)
     mode = "BACKFILL" if BACKFILL else f"quotidien ({DAYS} j)"
     print(f"Flux VeVe public — mode {mode}, limit={LIMIT}, "
           f"max_pages={MAX_PAGES}", flush=True)
@@ -651,7 +659,7 @@ def main() -> int:
     rows = _rows(daily)
     summary: Dict[str, Any] = dict(stats)
     # MODE CSV SEUL (repo sans Sheet, typiquement le backfill sur paolo)
-    if not SHEETS_OK or not sheet_id:
+    if csv_seul:
         if rows:
             summary["csv_jours"] = save_csv(rows)
         if BACKFILL:
