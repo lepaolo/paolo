@@ -99,7 +99,9 @@ REV_HEADER = ["date", "drop_usd", "drop_tx", "market_veve_usd",
 #   ADMIN_COLLECTIBLE_TRANSFER / ADMIN_COMIC_TRANSFER : livraisons VeVe -> EXCLU
 #   CRAFT / PROMO_ENTITY_TRANSACTION : craft & promos -> colonne `other` (ni
 #       drop ni marche : ce ne sont pas des ventes, mais on ne les jette pas).
-DROP_TYPES = ("CART_FIAT", "STORE_GEM")
+# STORE_AUCTION : vu au backfill du 12/07 (3 tx, 4 499 $) — c'est une vente de
+# la BOUTIQUE aux encheres -> elle appartient au revenue DROP.
+DROP_TYPES = ("CART_FIAT", "STORE_GEM", "STORE_AUCTION")
 MKT_VEVE_TYPES = ("MARKET_FIXED", "MARKET_AUCTION")
 MKT_STACKR = "MARKET_STACKR"
 TRANSFER = "NFT_TRANSFER"
@@ -710,4 +712,4 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
-# FIN veve_tx.py v7c (le flush sauve l'etat meme sans Sheet)
+# FIN veve_tx.py v8 (STORE_AUCTION compte dans le drop)
