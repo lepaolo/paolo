@@ -1,0 +1,56 @@
+name: VeVe transactions — BACKFILL (jetonveve)
+
+# A LANCER SUR JETONVEVE (repo PUBLIC = minutes Actions illimitees).
+# Le backfill est long (~11 pages/min) : sur le repo prive il devorait le quota.
+#
+# v6 : SAUVEGARDE INTERMEDIAIRE tous les 200 pages (CSV + onglet + etat).
+# Annuler le run ne coute plus que les quelques pages en cours.
+# Relancer autant de fois que necessaire jusqu'a « etat=TERMINE ».
+#
+# Secrets requis (les memes que burns) : SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON.
+
+on:
+  workflow_dispatch:
+    inputs:
+      until:
+        description: "Remonter jusqu'a ce jour PT (YYYY-MM-DD)"
+        required: true
+        default: "2026-01-01"
+      max_pages:
+        description: "Pages max pour ce run"
+        required: false
+        default: "3000"
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Backfill du flux VeVe
+        env:
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          VEVE_TX_BACKFILL: "true"
+          VEVE_TX_UNTIL: ${{ github.event.inputs.until }}
+          VEVE_TX_MAX_PAGES: ${{ github.event.inputs.max_pages }}
+          VEVE_TX_PAUSE: "0.3"
+        run: python -m scraper.veve_tx
+
+      - name: Commit (donnees + etat de reprise)
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data/veve_tx_daily.csv data/veve_tx_state.json 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "veve_tx: backfill"
+          git push || true
