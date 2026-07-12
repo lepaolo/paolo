@@ -57,7 +57,24 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 
-from scraper.sheets import _client, _open_worksheet, append_log
+# Le Sheet est OPTIONNEL (leçon du 12/07 : le backfill lance sur `paolo`
+# plantait a l'import, ce repo n'ayant ni scraper/sheets.py ni les identifiants
+# Google). Un backfill n'a pas besoin du Sheet : il produit son CSV, que le
+# repo principal ira lire. Sans sheets, on tourne en MODE CSV SEUL.
+try:
+    from scraper.sheets import _client, _open_worksheet, append_log
+    SHEETS_OK = True
+except Exception:                                    # pragma: no cover
+    SHEETS_OK = False
+
+    def _client():
+        raise RuntimeError("scraper.sheets indisponible")
+
+    def _open_worksheet(*a, **k):
+        raise RuntimeError("scraper.sheets indisponible")
+
+    def append_log(*a, **k):
+        return None
 
 TRPC = ("https://www.stackr.world/api/trpc/publicVeve.getVeveTransactions"
         "?input=")
@@ -95,6 +112,11 @@ PAUSE = float(os.environ.get("VEVE_TX_PAUSE", "0.25"))
 TIMEOUT = int(os.environ.get("VEVE_TX_TIMEOUT", "60"))
 CSV_PATH = os.environ.get("VEVE_TX_CSV", "data/veve_tx_daily.csv")
 BACKFILL = os.environ.get("VEVE_TX_BACKFILL", "false").lower() == "true"
+# CSV du backfill produit par l'autre repo (public) : le quotidien de `preda`
+# le fusionne dans l'onglet _VeveRevenue -> l'historique remonte tout seul.
+REMOTE_CSV = os.environ.get(
+    "VEVE_TX_REMOTE_CSV",
+    "https://raw.githubusercontent.com/lepaolo/paolo/main/data/veve_tx_daily.csv")
 UNTIL = os.environ.get("VEVE_TX_UNTIL", "").strip()
 WITH_PSEUDOS = os.environ.get("VEVE_TX_PSEUDOS", "true").lower() != "false"
 MAX_PAGES = int(os.environ.get("VEVE_TX_MAX_PAGES",
@@ -484,6 +506,26 @@ def save_csv(rows: List[List]) -> int:
     return len(keep)
 
 
+def fetch_remote(url: str = REMOTE_CSV) -> List[List]:
+    """Les jours recoltes par le BACKFILL de l'autre repo (CSV public brut)."""
+    if not url:
+        return []
+    try:
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        out = []
+        for row in csv.reader(r.text.splitlines()):
+            if row and row[0] != "date":
+                out.append(row)
+        print(f"  backfill distant : {len(out)} jour(s) repris de {url}",
+              flush=True)
+        return out
+    except Exception as e:
+        print(f"  backfill distant indisponible ({e}) — sans consequence.",
+              flush=True)
+        return []
+
+
 def write_tab(sh, rows: List[List]) -> int:
     """Onglet cache _VeveRevenue : upsert par date, nombres RAW natifs."""
     ws = _open_worksheet(sh, REV_TAB, cols=len(REV_HEADER))
@@ -608,15 +650,34 @@ def main() -> int:
         return 1
     rows = _rows(daily)
     summary: Dict[str, Any] = dict(stats)
+    # MODE CSV SEUL (repo sans Sheet, typiquement le backfill sur paolo)
+    if not SHEETS_OK or not sheet_id:
+        if rows:
+            summary["csv_jours"] = save_csv(rows)
+        if BACKFILL:
+            save_state(state)
+            summary["etat"] = ("TERMINE" if state.get("done") else
+                               f"reprise au {state.get('resume_day')} "
+                               f"(offset {state.get('offset')})")
+        summary["mode"] = "CSV seul (pas de Sheet sur ce repo)"
+        summary["duration"] = f"{time.time() - t0:.0f}s"
+        print(f"veve_tx : {summary}", flush=True)
+        return 0
     if BACKFILL:
         save_state(state)
         summary["etat"] = (f"reprise au {state.get('resume_day')} "
                            f"(offset {state.get('offset')})"
                            if not state.get("done") else "TERMINE")
-    if rows:
-        summary["csv_jours"] = save_csv(rows)
+    if rows or not BACKFILL:
+        # le quotidien reprend aussi les jours du backfill distant (paolo) :
+        # l'historique de l'onglet se remplit tout seul, sans secrets partages.
+        distants = [] if BACKFILL else fetch_remote()
+        if rows:
+            summary["csv_jours"] = save_csv(rows)
         sh = _client().open_by_key(sheet_id)
-        summary["tab_jours"] = write_tab(sh, rows)
+        summary["tab_jours"] = write_tab(sh, rows + distants)
+        if distants:
+            summary["jours_backfill"] = len(distants)
         if WITH_PSEUDOS and pseudos:
             summary.update(merge_pseudos(sh, pseudos))
         # apercu (verification humaine dans les logs)
@@ -636,4 +697,4 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 
-# FIN veve_tx.py v6 (sauvegardes intermediaires : une annulation ne coute plus rien)
+# FIN veve_tx.py v7 (Sheet optionnel + reprise du backfill distant)
