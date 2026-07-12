@@ -1,14 +1,13 @@
 name: VeVe transactions — BACKFILL
 
-# A LANCER SUR JETONVEVE (repo PUBLIC = minutes Actions illimitees).
-# Le backfill est long (~11 pages/min) : sur le repo prive il devorait le quota.
-#
-# v6 : SAUVEGARDE INTERMEDIAIRE tous les 200 pages (CSV + onglet + etat).
-# Annuler le run ne coute plus que les quelques pages en cours.
-# Relancer autant de fois que necessaire jusqu'a « etat=TERMINE ».
-#
-# AUCUN secret : ce repo n a pas acces au Sheet. Le backfill produit seulement
+# AUCUN secret : ce repo n'a pas acces au Sheet. Le backfill produit seulement
 # data/veve_tx_daily.csv, que le quotidien de preda ira lire (CSV public).
+#
+# v2 du workflow (12/07) : LE PUSH EST REJOUE APRES REBASE.
+# Le run #4 a tourne 1 h, fini (« TERMINE », 42 jours)... et le push a ete
+# REJETE (« Updates were rejected because the remote contains work that you do
+# not have locally ») -> le CSV n'est jamais arrive dans le repo. Une heure
+# perdue pour un git pull manquant.
 
 on:
   workflow_dispatch:
@@ -24,6 +23,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:                  # jamais deux backfills en meme temps
+  group: veve-tx-backfill
+  cancel-in-progress: false
 
 jobs:
   backfill:
@@ -51,5 +54,14 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add data/veve_tx_daily.csv data/veve_tx_state.json 2>/dev/null || true
-          git diff --cached --quiet || git commit -m "veve_tx: backfill"
-          git push || true
+          git diff --cached --quiet && echo "rien a commiter" && exit 0
+          git commit -m "veve_tx: backfill"
+          # LE POINT CRITIQUE : rebaser AVANT de pousser, et reessayer.
+          # Sans ca, un push rejete jette des heures de collecte.
+          for i in 1 2 3 4 5; do
+            git pull --rebase --autostash origin main && git push origin main && exit 0
+            echo "push refuse (essai $i) — nouvelle tentative dans 10 s"
+            sleep 10
+          done
+          echo "::error::PUSH IMPOSSIBLE — la recolte est dans le runner mais pas dans le repo."
+          exit 1
