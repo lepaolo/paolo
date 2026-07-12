@@ -1,4 +1,4 @@
-name: VeVe transactions — BACKFILL (jetonveve)
+name: VeVe transactions — BACKFILL
 
 # A LANCER SUR JETONVEVE (repo PUBLIC = minutes Actions illimitees).
 # Le backfill est long (~11 pages/min) : sur le repo prive il devorait le quota.
@@ -7,7 +7,8 @@ name: VeVe transactions — BACKFILL (jetonveve)
 # Annuler le run ne coute plus que les quelques pages en cours.
 # Relancer autant de fois que necessaire jusqu'a « etat=TERMINE ».
 #
-# Secrets requis (les memes que burns) : SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON.
+# AUCUN secret : ce repo n a pas acces au Sheet. Le backfill produit seulement
+# data/veve_tx_daily.csv, que le quotidien de preda ira lire (CSV public).
 
 on:
   workflow_dispatch:
@@ -38,8 +39,6 @@ jobs:
 
       - name: Backfill du flux VeVe
         env:
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           VEVE_TX_BACKFILL: "true"
           VEVE_TX_UNTIL: ${{ github.event.inputs.until }}
           VEVE_TX_MAX_PAGES: ${{ github.event.inputs.max_pages }}
