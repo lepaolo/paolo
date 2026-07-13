@@ -387,6 +387,7 @@ def walk(days: int = DAYS, until: str = "", max_pages: int = MAX_PAGES,
             print(f"  {vides} pages vides d'affilee -> genese atteinte.",
                   flush=True)
             state["done"] = True
+            state["flux_epuise"] = True     # DEFINITIF : il n'y a plus rien avant
             break
         vides = 0
         fresh = []
@@ -449,6 +450,7 @@ def walk(days: int = DAYS, until: str = "", max_pages: int = MAX_PAGES,
         state.setdefault("done", False)
         if not incomplet and oldest and until and oldest <= until:
             state["done"] = True
+            state["cible"] = until          # la cible ATTEINTE (pas la fin du flux)
             print(f"  objectif atteint : remonte jusqu'au {oldest} "
                   f"(cible {until}).", flush=True)
 
@@ -647,9 +649,26 @@ def main() -> int:
           f"max_pages={MAX_PAGES}", flush=True)
     state = load_state() if BACKFILL else {}
     if BACKFILL and state.get("done"):
-        print(f"Backfill deja termine (jusqu'au {state.get('resume_day')}). "
-              f"Supprimer {STATE_PATH} pour repartir de zero.", flush=True)
-        return 0
+        # `done` disait seulement "j'ai atteint la cible PRECEDENTE" : relancer
+        # avec un `until` plus ancien ne faisait RIEN (bug constate le 13/07,
+        # backfill #7 arrete net alors qu'il restait 5 mois a remonter).
+        # On ne refuse desormais que si le flux est VRAIMENT epuise, ou si la
+        # nouvelle cible n'est pas plus ancienne que la ou on s'est arrete.
+        reprise = str(state.get("resume_day") or "")
+        if state.get("flux_epuise"):
+            print(f"Genese du flux atteinte ({reprise}) — il n'y a rien avant. "
+                  f"Rien a faire.", flush=True)
+            return 0
+        if not UNTIL or (reprise and UNTIL >= reprise):
+            print(f"Backfill deja termine jusqu'au {reprise} "
+                  f"(cible atteinte : {state.get('cible') or '?'}). Donner un "
+                  f"VEVE_TX_UNTIL plus ANCIEN que {reprise} pour continuer.",
+                  flush=True)
+            return 0
+        state["done"] = False
+        print(f"Nouvelle cible {UNTIL} plus ancienne que la reprise {reprise} "
+              f"-> on REOUVRE le backfill et on repart de l'offset "
+              f"{state.get('offset', 0)}.", flush=True)
     sh_cache = {}
 
     def _flush(jours: Dict[str, Dict], ps: Dict[str, str], st: Dict) -> int:
